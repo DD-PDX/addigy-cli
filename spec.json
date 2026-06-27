@@ -4749,6 +4749,73 @@
         ]
       }
     },
+    "/o/{organization_id}/scripts/query": {
+      "post": {
+        "summary": "Query scripts.",
+        "description": "Query scripts for an organization. <br><b>Permission Required: </b>View Predefined Commands.",
+        "tags": [
+          "script"
+        ],
+        "parameters": [
+          {
+            "required": true,
+            "name": "organization_id",
+            "description": "Organization id",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "page": {
+                    "type": "integer",
+                    "example": 1
+                  },
+                  "per_page": {
+                    "type": "integer",
+                    "example": 100
+                  },
+                  "sort_field": {
+                    "type": "string",
+                    "example": "name"
+                  },
+                  "sort_direction": {
+                    "type": "string",
+                    "example": "asc"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/response_error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/o/{organization_id}/scripts": {
       "delete": {
         "summary": "Delete a script.",
