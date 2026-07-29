@@ -3308,6 +3308,45 @@
       ]
     },
     {
+      "name": "o_scripts_query",
+      "description": "Query scripts for an organization. <br><b>Permission Required: </b>View Predefined Commands. Optional: page, per_page, sort_field, sort_direction.",
+      "method": "POST",
+      "path": "/o/{organization_id}/scripts/query",
+      "params": [
+        {
+          "name": "organization_id",
+          "type": "string",
+          "location": "path",
+          "description": "Organization id",
+          "required": true
+        },
+        {
+          "name": "page",
+          "type": "int",
+          "location": "body",
+          "description": "Page"
+        },
+        {
+          "name": "per_page",
+          "type": "int",
+          "location": "body",
+          "description": "Per page"
+        },
+        {
+          "name": "sort_field",
+          "type": "string",
+          "location": "body",
+          "description": "Sort field"
+        },
+        {
+          "name": "sort_direction",
+          "type": "string",
+          "location": "body",
+          "description": "Sort direction"
+        }
+      ]
+    },
+    {
       "name": "o_templates_create",
       "description": "Create a policy with the assets associated to a template. <br><b>Permission Required: </b>Create Policy.",
       "method": "POST",

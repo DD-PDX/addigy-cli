@@ -13,5 +13,6 @@ func newOScriptsCmd(flags *rootFlags) *cobra.Command {
 	}
 
 	cmd.AddCommand(newOScriptsDeleteCmd(flags))
+	cmd.AddCommand(newOScriptsQueryCmd(flags))
 	return cmd
 }
