@@ -7880,6 +7880,77 @@
       }
     },
     "/users": {
+      "post": {
+        "summary": "Create a user.",
+        "description": "Create a user. <br><b>Permission Required: </b>Create User. <br><br>The <code>role</code> accepts a built-in name (e.g. <code>admin</code>, <code>power</code>) or a custom role ID. <code>policies</code> is an array of policy IDs the user is restricted to; omit it for an unrestricted user.",
+        "tags": [
+          "users"
+        ],
+        "requestBody": {
+          "description": "Request for creating a user",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "example": "email@example.com"
+                  },
+                  "name": {
+                    "type": "string",
+                    "example": "John Doe"
+                  },
+                  "phone": {
+                    "type": "string",
+                    "example": "3059999999"
+                  },
+                  "policies": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "role": {
+                    "type": "string",
+                    "example": "admin"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/user"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/response_error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
       "put": {
         "summary": "Update a user.",
         "description": "Update a user. <br><b>Permission Required: </b>Edit User. ",

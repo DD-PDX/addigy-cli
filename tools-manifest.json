@@ -5395,6 +5395,45 @@
       ]
     },
     {
+      "name": "users_create",
+      "description": "Create a user with an optional role and policy restrictions. <br><b>Permission Required: </b>Create User.",
+      "method": "POST",
+      "path": "/users",
+      "params": [
+        {
+          "name": "email",
+          "type": "string",
+          "location": "body",
+          "description": "Email of the user to create.",
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "location": "body",
+          "description": "Name"
+        },
+        {
+          "name": "phone",
+          "type": "string",
+          "location": "body",
+          "description": "Phone"
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "location": "body",
+          "description": "Role (built-in name such as \"admin\"/\"power\", or a custom role ID)."
+        },
+        {
+          "name": "policies",
+          "type": "array",
+          "location": "body",
+          "description": "Policy IDs to restrict the user to. Omit for no restriction."
+        }
+      ]
+    },
+    {
       "name": "users_delete",
       "description": "Deletes a user from the organization. <br><b>Permission Required: </b>Remove User. Destructive.",
       "method": "DELETE",
