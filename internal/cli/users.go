@@ -13,6 +13,7 @@ func newUsersCmd(flags *rootFlags) *cobra.Command {
 		Hidden: true,
 	}
 
+	cmd.AddCommand(newUsersCreateCmd(flags))
 	cmd.AddCommand(newUsersDeleteCmd(flags))
 	cmd.AddCommand(newUsersUpdateCmd(flags))
 	return cmd

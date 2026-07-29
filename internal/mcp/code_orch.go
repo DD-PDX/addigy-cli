@@ -1587,6 +1587,14 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		keywords:   codeOrchKeywords("system-updates", "list-systemupdates-6", "Gets installed system updates reported for a device.<br><br><b>Permission Required: </b>View System Updates Settings.", "/system-updates/installed/device/report"),
 	},
 	{
+		ID:         "users.create",
+		Method:     "POST",
+		Path:       "/users",
+		Summary:    "Create a user. <br><b>Permission Required: </b>Create User.",
+		Positional: []string{},
+		keywords:   codeOrchKeywords("users", "create", "Create a user with an optional role and policy restrictions. <br><b>Permission Required: </b>Create User.", "/users"),
+	},
+	{
 		ID:         "users.delete",
 		Method:     "DELETE",
 		Path:       "/users",
