@@ -90,8 +90,11 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 // retry-on-SQLITE_BUSY loop and propagates ctx.Err() back to the caller
 // instead of waiting out the full migrationLockTimeout.
 func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return nil, fmt.Errorf("creating db directory: %w", err)
+	}
+	if err := restrictDBFileMode(dbPath); err != nil {
+		return nil, err
 	}
 
 	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000&_foreign_keys=ON&_temp_store=MEMORY&_mmap_size=268435456")
@@ -111,6 +114,37 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	}
 
 	return s, nil
+}
+
+// dbFileMode keeps the mirror owner-only: it holds org configuration that
+// should not be readable by other local users. SQLite creates the -wal and
+// -shm sidecars with the main file's mode, so fixing the main file (and any
+// sidecars left over from an older, 0644 build) is enough.
+const dbFileMode = 0o600
+
+// restrictDBFileMode creates dbPath with dbFileMode when it does not exist
+// yet and tightens an existing file and its sidecars to dbFileMode.
+func restrictDBFileMode(dbPath string) error {
+	if strings.HasPrefix(dbPath, ":memory:") || strings.HasPrefix(dbPath, "file:") {
+		return nil
+	}
+	f, err := os.OpenFile(dbPath, os.O_RDWR|os.O_CREATE, dbFileMode)
+	if err != nil {
+		return fmt.Errorf("creating database file: %w", err)
+	}
+	f.Close()
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		info, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		if info.Mode().Perm() != dbFileMode {
+			if err := os.Chmod(p, dbFileMode); err != nil {
+				return fmt.Errorf("restricting permissions on %s: %w", p, err)
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error {
@@ -1995,6 +2029,21 @@ var resourceIDFieldOverrides = map[string]string{
 	// payload_group_id, not "id" — divergence here silently drops rows.
 	"mdm":                         "payload_group_id",
 	"mdm-configurations-profiles": "payload_group_id",
+	// Resources added by sync_mirror.go. Keep this block identical in
+	// internal/cli/sync.go and internal/store/store.go.
+	"policies":                  "policyId",
+	"smart-software":            "instruction_id",
+	"scripts":                   "id",
+	"policy-rules":              "rule_id",
+	"system-update-settings":    "policy_id",
+	"variables":                 "key",
+	"webhooks":                  "id",
+	"maintenance":               "_id",
+	"identity-configurations":   "id",
+	"device-script-assignments": "id",
+	"devices":                   "agentid",
+	"benchmarks":                "id",
+	"compliance-rules":          "id",
 }
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did

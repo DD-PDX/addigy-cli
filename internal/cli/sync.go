@@ -47,6 +47,7 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var strict bool
 	var paramFlags []string
 	var resourceParamFlags []string
+	var orgID string
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -174,30 +175,42 @@ Exit codes & warnings:
 			}
 
 			started := time.Now()
-			work := make(chan string, len(resources))
 			results := make(chan syncResult, len(resources))
+			env := &syncEnv{}
 
-			var wg sync.WaitGroup
-			for i := 0; i < concurrency; i++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					for resource := range work {
-						res := syncResource(c, db, resource, sinceTS, full, maxPages, effectiveLatestOnly, userParams)
-						results <- res
-					}
-				}()
-			}
-
-			// Enqueue all resources
-			for _, resource := range resources {
-				work <- resource
-			}
-			close(work)
-
-			// Collect results in a separate goroutine
-			go func() {
+			// runPhase syncs one group of resources through the worker pool
+			// and waits for it to finish, so later phases can read what it
+			// stored.
+			runPhase := func(phase []string) {
+				work := make(chan string, len(phase))
+				var wg sync.WaitGroup
+				for i := 0; i < concurrency; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						for resource := range work {
+							results <- syncResource(c, db, resource, sinceTS, full, maxPages, effectiveLatestOnly, userParams, env)
+						}
+					}()
+				}
+				for _, resource := range phase {
+					work <- resource
+				}
+				close(work)
 				wg.Wait()
+			}
+
+			// Phases: parents (policies) first, because their rows supply the
+			// org id for /o/{org}/ paths and the ids per-policy resources
+			// iterate; then flat resources; then per-policy dependents.
+			parents, flat, dependents := orderSyncResources(resources)
+			go func() {
+				runPhase(parents)
+				if needsOrgID(flat) || needsOrgID(dependents) {
+					env.OrgID = resolveSyncOrgID(orgID, db)
+				}
+				runPhase(flat)
+				runPhase(dependents)
 				close(results)
 			}()
 
@@ -289,6 +302,7 @@ Exit codes & warnings:
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")
 	cmd.Flags().StringArrayVar(&paramFlags, "param", nil, "Extra query param to inject into every sync request (repeatable, key=value). Use for APIs whose spec marks a filter optional but the endpoint rejects calls without it (e.g. --param mine=true). Avoid pagination keys (limit/since/cursor) — overriding them corrupts resume state.")
+	cmd.Flags().StringVar(&orgID, "org-id", "", "Organization id for org-scoped resources (/o/{org}/...). Defaults to $ADDIGY_ORG_ID, then the orgid on synced policies.")
 	cmd.Flags().StringArrayVar(&resourceParamFlags, "resource-param", nil, "Per-resource extra query param (repeatable, resource:key=value). Wins over --param when both define the same key.")
 
 	return cmd
@@ -298,11 +312,14 @@ Exit codes & warnings:
 // It resumes from the last cursor unless sinceTS or full mode overrides it.
 // channel_workflow.go.tmpl mirrors the trailing dates arg conditional;
 // keep both call sites in sync if this signature changes.
-func syncResource(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
-	RateLimit() float64
-}, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool, userParams *syncUserParams) syncResult {
+func syncResource(c syncClient, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool, userParams *syncUserParams, env *syncEnv) syncResult {
 	started := time.Now()
+
+	// Per-parent resources (one request per mirrored policy) have their own
+	// loop; see sync_mirror.go.
+	if _, ok := syncDependentSpecs[resource]; ok {
+		return syncDependentResource(c, db, resource, env, 4)
+	}
 
 	if !humanFriendly {
 		fmt.Fprintf(os.Stdout, `{"event":"sync_start","resource":"%s"}`+"\n", resource)
@@ -312,6 +329,7 @@ func syncResource(c interface {
 	if err != nil {
 		return syncResult{Resource: resource, Err: err, Duration: time.Since(started)}
 	}
+	path = resolveSyncPath(path, env)
 
 	// Skip resources whose path template still contains unresolved `{key}`
 	// placeholders after syncResourcePath() resolution. These paths require
@@ -393,6 +411,10 @@ func syncResource(c interface {
 	var extractFailureTotal int
 	var consumedTotal int
 	anomalyEmitted := false
+	// queryPage is the page number sent to POST .../query resources, which
+	// page by number in the body instead of by cursor.
+	_, isQueryResource := syncQuerySpecs[resource]
+	queryPage := 1
 
 	for {
 		params := map[string]string{}
@@ -415,7 +437,7 @@ func syncResource(c interface {
 		// endpoint whose OpenAPI spec marks the filter optional).
 		userParams.applyTo(resource, params)
 
-		data, err := c.Get(path, params)
+		data, err := fetchSyncPage(c, resource, path, params, queryPage)
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {
@@ -439,7 +461,7 @@ func syncResource(c interface {
 				break
 			}
 			// Single object response - try to store as-is
-			if err := upsertSingleObject(db, resource, data); err != nil {
+			if err := upsertSingleObject(db, resource, prepareSyncItem(resource, data)); err != nil {
 				if !humanFriendly {
 					fmt.Fprintln(os.Stdout, syncErrorJSON(resource, "", err))
 				}
@@ -460,6 +482,7 @@ func syncResource(c interface {
 		// "primary_key_unresolved" the first time any single item
 		// fails, and the F4b "stored_count_zero_after_extraction"
 		// probe when extraction succeeded but rows still didn't land.
+		items = prepareSyncItems(resource, items)
 		stored, extractFailures, err := upsertResourceBatch(db, resource, items)
 		if err != nil {
 			if !humanFriendly {
@@ -537,6 +560,14 @@ func syncResource(c interface {
 				}
 			}
 			break
+		}
+
+		if isQueryResource {
+			if queryPage >= queryPageCount(data) {
+				break
+			}
+			queryPage++
+			continue
 		}
 
 		// Sticky-cursor detector: if the API echoes the same next cursor across
@@ -969,9 +1000,14 @@ func parseSinceDuration(s string) (time.Time, error) {
 
 func defaultSyncResources() []string {
 	return []string{
+		"benchmarks",
+		"compliance-rules",
 		"device-script-assignments",
+		"devices",
 		"facts",
 		"feature-betas",
+		"identity-configurations",
+		"maintenance",
 		"mdm",
 		"mdm-configurations-definitions",
 		"mdm-configurations-profiles",
@@ -980,9 +1016,16 @@ func defaultSyncResources() []string {
 		"oa-benchmarks-pre-built",
 		"oa-compliance-rules-pre-built",
 		"oa-integrations-azure-ca-tenants-metadata",
+		"policies",
+		"policy-rules",
+		"scripts",
+		"smart-software",
 		"static-fields",
 		"static-fields-value",
+		"system-update-settings",
 		"system-updates",
+		"variables",
+		"webhooks",
 	}
 	// Omitted from the default set because their endpoints require a path/query
 	// param the bulk syncer cannot supply, so they always return HTTP 400 in a
@@ -1020,6 +1063,23 @@ func syncResourcePath(resource string) (string, error) {
 		"static-fields-value":      "/static-fields/value",
 		"system-updates":           "/system-updates/latest",
 		"system-updates-available": "/system-updates/available",
+		// Added by sync_mirror.go. POST .../query searches are listed in
+		// syncQuerySpecs; {org} is filled by resolveSyncPath.
+		// Device search: the one POST outside /query the client allows
+		// (exact match; see readOnlySearchPaths in internal/client).
+		"benchmarks":              "/oa/benchmarks/query",
+		"compliance-rules":        "/oa/compliance-rules/query",
+		"devices":                 "/devices",
+		"identity-configurations": "/oa/identity/configurations/policies/query",
+		"maintenance":             "/maintenance/query",
+		"policies":                "/oa/policies/query",
+		// The trailing slash is required; without it Addigy redirects.
+		"policy-rules":           "/o/{org}/policies/rules/",
+		"scripts":                "/o/{org}/scripts/query",
+		"smart-software":         "/oa/smart-software/query",
+		"system-update-settings": "/system-updates/settings",
+		"variables":              "/oa/variables/query",
+		"webhooks":               "/oa/webhooks/query",
 	}
 	if p, ok := paths[resource]; ok {
 		return p, nil
@@ -1048,6 +1108,21 @@ var resourceIDFieldOverrides = map[string]string{
 	// this the generic fallback misses and every item is dropped at upsert.
 	"mdm":                         "payload_group_id",
 	"mdm-configurations-profiles": "payload_group_id",
+	// Resources added by sync_mirror.go. Keep this block identical in
+	// internal/cli/sync.go and internal/store/store.go.
+	"policies":                  "policyId",
+	"smart-software":            "instruction_id",
+	"scripts":                   "id",
+	"policy-rules":              "rule_id",
+	"system-update-settings":    "policy_id",
+	"variables":                 "key",
+	"webhooks":                  "id",
+	"maintenance":               "_id",
+	"identity-configurations":   "id",
+	"device-script-assignments": "id",
+	"devices":                   "agentid",
+	"benchmarks":                "id",
+	"compliance-rules":          "id",
 }
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did
