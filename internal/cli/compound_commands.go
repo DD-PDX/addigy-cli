@@ -1167,7 +1167,7 @@ policy coverage percent. The fastest first-call for any Addigy triage workflow.`
 
 			alertCount := countByType(db, "monitoring")
 			mdmQueue := countByType(db, "mdm")
-			softwareCount := countByType(db, "oa-benchmarks-pre-built")
+			softwareCount := countByType(db, "smart-software")
 
 			out := map[string]any{
 				"device_count":          len(devs),

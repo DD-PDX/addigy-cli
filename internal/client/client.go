@@ -199,6 +199,17 @@ func (c *Client) Post(path string, body any) (json.RawMessage, int, error) {
 	return c.do("POST", path, nil, body, nil)
 }
 
+// PostQuery sends a read-only Addigy v2 search (POST to a path ending in
+// /query) with query-string params such as multitenancy=false. Any other path
+// is refused before a request is built, so callers like sync can never reach a
+// mutating endpoint through this method.
+func (c *Client) PostQuery(path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	if isMutatingRequest(http.MethodPost, path) {
+		return nil, 0, fmt.Errorf("refusing POST %s: PostQuery only sends read-only /query requests", path)
+	}
+	return c.do("POST", path, params, body, nil)
+}
+
 func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do("POST", path, nil, body, headers)
 }
@@ -352,7 +363,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		// Success
 		if resp.StatusCode < 400 {
 			c.limiter.OnSuccess()
-			if method != http.MethodGet && !c.DryRun {
+			if isMutatingRequest(method, path) && !c.DryRun {
 				c.invalidateCache()
 			}
 			return json.RawMessage(respBody), resp.StatusCode, nil

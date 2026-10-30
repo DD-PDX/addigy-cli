@@ -3,6 +3,7 @@
 package client
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -129,5 +130,46 @@ func TestDo_AllowsQueryPostAsRead(t *testing.T) {
 	}
 	if !hit {
 		t.Fatal("/query POST should have reached the server without confirmation")
+	}
+}
+
+func TestPostQuery_RefusesNonQueryPath(t *testing.T) {
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv.URL)
+	c.AssumeYes = true // even an auto-confirmed client must not mutate via PostQuery
+	if _, _, err := c.PostQuery("/devices", nil, map[string]any{}); err == nil {
+		t.Fatal("expected PostQuery to refuse a non-/query path")
+	}
+	if hit {
+		t.Fatal("PostQuery reached the server for a non-/query path")
+	}
+}
+
+func TestPostQuery_SendsParamsAndBody(t *testing.T) {
+	var gotQuery, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		b := new(strings.Builder)
+		_, _ = io.Copy(b, r.Body)
+		gotBody = b.String()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv.URL) // NoInput=true: a mutation would be refused
+	if _, _, err := c.PostQuery("/oa/policies/query", map[string]string{"multitenancy": "false"}, map[string]any{"page": 1}); err != nil {
+		t.Fatalf("PostQuery: %v", err)
+	}
+	if gotQuery != "multitenancy=false" {
+		t.Errorf("query = %q, want multitenancy=false", gotQuery)
+	}
+	if gotBody != `{"page":1}` {
+		t.Errorf("body = %q", gotBody)
 	}
 }
