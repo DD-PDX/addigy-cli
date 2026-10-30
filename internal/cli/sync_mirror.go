@@ -26,7 +26,8 @@ import (
 )
 
 // syncClient is the subset of *client.Client the sync loop uses. PostQuery
-// refuses any path that does not end in /query, which keeps sync read-only.
+// refuses any path that does not end in /query (except the exact device
+// search path, POST /devices), which keeps sync read-only.
 type syncClient interface {
 	Get(string, map[string]string) (json.RawMessage, error)
 	PostQuery(string, map[string]string, any) (json.RawMessage, int, error)
@@ -62,6 +63,9 @@ var oaQueryParams = map[string]string{"multitenancy": "false"}
 // syncQuerySpecs is keyed by sync resource name. A resource listed here is
 // fetched with PostQuery instead of Get.
 var syncQuerySpecs = map[string]syncQuerySpec{
+	"benchmarks":              {Params: oaQueryParams, Body: map[string]any{}},
+	"compliance-rules":        {Params: oaQueryParams, Body: map[string]any{}},
+	"devices":                 {Body: map[string]any{}},
 	"policies":                {Params: oaQueryParams, Body: sortedQueryBody()},
 	"smart-software":          {Params: oaQueryParams, Body: sortedQueryBody()},
 	"scripts":                 {Body: map[string]any{}},
@@ -418,10 +422,11 @@ var syncCompositeIDs = map[string][]string{
 // returns carry the org as orgid or organization_id. Without o_id the typed
 // insert fails and takes the whole batch with it.
 var syncOrgKeyedResources = map[string]bool{
-	"policies":  true,
-	"scripts":   true,
-	"variables": true,
-	"webhooks":  true,
+	"benchmarks": true,
+	"policies":   true,
+	"scripts":    true,
+	"variables":  true,
+	"webhooks":   true,
 }
 
 // prepareSyncObject applies composite ids, the o_id copy and redaction to a

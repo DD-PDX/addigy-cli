@@ -1000,7 +1000,10 @@ func parseSinceDuration(s string) (time.Time, error) {
 
 func defaultSyncResources() []string {
 	return []string{
+		"benchmarks",
+		"compliance-rules",
 		"device-script-assignments",
+		"devices",
 		"facts",
 		"feature-betas",
 		"identity-configurations",
@@ -1062,6 +1065,11 @@ func syncResourcePath(resource string) (string, error) {
 		"system-updates-available": "/system-updates/available",
 		// Added by sync_mirror.go. POST .../query searches are listed in
 		// syncQuerySpecs; {org} is filled by resolveSyncPath.
+		// Device search: the one POST outside /query the client allows
+		// (exact match; see readOnlySearchPaths in internal/client).
+		"benchmarks":              "/oa/benchmarks/query",
+		"compliance-rules":        "/oa/compliance-rules/query",
+		"devices":                 "/devices",
 		"identity-configurations": "/oa/identity/configurations/policies/query",
 		"maintenance":             "/maintenance/query",
 		"policies":                "/oa/policies/query",
@@ -1112,6 +1120,9 @@ var resourceIDFieldOverrides = map[string]string{
 	"maintenance":               "_id",
 	"identity-configurations":   "id",
 	"device-script-assignments": "id",
+	"devices":                   "agentid",
+	"benchmarks":                "id",
+	"compliance-rules":          "id",
 }
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did

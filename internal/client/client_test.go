@@ -142,8 +142,11 @@ func TestPostQuery_RefusesNonQueryPath(t *testing.T) {
 
 	c := newTestClient(srv.URL)
 	c.AssumeYes = true // even an auto-confirmed client must not mutate via PostQuery
-	if _, _, err := c.PostQuery("/devices", nil, map[string]any{}); err == nil {
-		t.Fatal("expected PostQuery to refuse a non-/query path")
+	// /devices is allowlisted exactly; near-misses and other writes are not.
+	for _, p := range []string{"/self-service-configurations", "/devices/", "/devices/x", "/o/x/devices", "/policies", "/devicesx"} {
+		if _, _, err := c.PostQuery(p, nil, map[string]any{}); err == nil {
+			t.Errorf("expected PostQuery to refuse POST %s", p)
+		}
 	}
 	if hit {
 		t.Fatal("PostQuery reached the server for a non-/query path")
@@ -171,5 +174,29 @@ func TestPostQuery_SendsParamsAndBody(t *testing.T) {
 	}
 	if gotBody != `{"page":1}` {
 		t.Errorf("body = %q", gotBody)
+	}
+}
+
+// POST /devices is a read (device search): PostQuery sends it without the
+// mutation confirmation, even in non-interactive mode without --yes.
+func TestPostQuery_AllowsDeviceSearchExactly(t *testing.T) {
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv.URL) // NoInput=true, AssumeYes=false
+	if _, _, err := c.PostQuery("/devices", nil, map[string]any{"page": 1}); err != nil {
+		t.Fatalf("PostQuery /devices: %v", err)
+	}
+	if gotMethod != "POST" || gotPath != "/devices" {
+		t.Errorf("sent %s %s", gotMethod, gotPath)
+	}
+	// The generic Post path keeps treating /devices as a guarded write.
+	if _, _, err := c.Post("/devices", map[string]any{}); err == nil {
+		t.Error("Post /devices without --yes should still be refused by the guard")
 	}
 }

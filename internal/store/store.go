@@ -2041,6 +2041,9 @@ var resourceIDFieldOverrides = map[string]string{
 	"maintenance":               "_id",
 	"identity-configurations":   "id",
 	"device-script-assignments": "id",
+	"devices":                   "agentid",
+	"benchmarks":                "id",
+	"compliance-rules":          "id",
 }
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did

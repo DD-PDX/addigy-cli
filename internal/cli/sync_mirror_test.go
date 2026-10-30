@@ -57,8 +57,8 @@ func TestSyncDefaults_ReadOnlyAndResolvable(t *testing.T) {
 			t.Errorf("%s: %v", r, err)
 			continue
 		}
-		if _, ok := syncQuerySpecs[r]; ok && !strings.HasSuffix(p, "/query") {
-			t.Errorf("%s is synced by POST but its path %q is not a /query search", r, p)
+		if _, ok := syncQuerySpecs[r]; ok && !strings.HasSuffix(p, "/query") && p != "/devices" {
+			t.Errorf("%s is synced by POST but its path %q is not a /query search or the device search", r, p)
 		}
 	}
 	for r := range syncQuerySpecs {
@@ -214,6 +214,13 @@ func (f *fakeAddigy) handler(t *testing.T) http.Handler {
 			} else {
 				_, _ = io.WriteString(w, `{"items":[{"id":"s3"}],"metadata":{"page":2,"page_count":2}}`)
 			}
+		case r.Method == http.MethodPost && r.URL.Path == "/devices":
+			// Synthetic devices only; real device rows never go in fixtures.
+			if body["page"] == float64(1) {
+				_, _ = io.WriteString(w, `{"items":[{"agentid":"agent-a","facts":{"device_name":{"value":"Test Mac A"},"policy_ids":{"value":["p1"]}}}],"metadata":{"page":1,"page_count":2}}`)
+			} else {
+				_, _ = io.WriteString(w, `{"items":[{"agentid":"agent-b","facts":{"device_name":{"value":"Test Mac B"}}}],"metadata":{"page":2,"page_count":2}}`)
+			}
 		case r.Method == http.MethodPost && r.URL.Path == "/oa/webhooks/query":
 			_, _ = io.WriteString(w, `[{"id":"w1","secret_token":"tok","action":{"url":"https://x"}}]`)
 		case r.Method == http.MethodGet && r.URL.Path == "/o/org-1/policies/rules":
@@ -256,6 +263,9 @@ func TestSyncResource_MirrorResources(t *testing.T) {
 	if res := syncResource(c, db, "policy-rules", "", true, 100, false, nil, env); res.Err != nil || res.Count != 1 {
 		t.Fatalf("policy-rules: count=%d err=%v warn=%v", res.Count, res.Err, res.Warn)
 	}
+	if res := syncResource(c, db, "devices", "", true, 100, false, nil, env); res.Err != nil || res.Count != 2 {
+		t.Fatalf("devices: count=%d err=%v warn=%v", res.Count, res.Err, res.Warn)
+	}
 	if res := syncResource(c, db, "webhooks", "", true, 100, false, nil, env); res.Err != nil || res.Count != 1 {
 		t.Fatalf("webhooks: count=%d err=%v warn=%v", res.Count, res.Err, res.Warn)
 	}
@@ -277,7 +287,7 @@ func TestSyncResource_MirrorResources(t *testing.T) {
 	var sawScriptsPage2, sawMultitenancy bool
 	for _, req := range fake.requests {
 		method, _, _ := strings.Cut(req, " ")
-		if method == http.MethodPost && !strings.Contains(req, "/query?") {
+		if method == http.MethodPost && !strings.Contains(req, "/query?") && !strings.HasPrefix(req, "POST /devices? ") {
 			t.Errorf("non-query POST sent: %s", req)
 		}
 		if method != http.MethodPost && method != http.MethodGet {

@@ -199,15 +199,31 @@ func (c *Client) Post(path string, body any) (json.RawMessage, int, error) {
 	return c.do("POST", path, nil, body, nil)
 }
 
+// readOnlySearchPaths are POST endpoints outside the /query convention that
+// are nonetheless pure reads. Matched exactly (no prefix, no trailing-slash
+// variant). POST /devices is Addigy's device search and the only bulk device
+// listing in the v2 API.
+var readOnlySearchPaths = map[string]bool{
+	"/devices": true,
+}
+
+// isReadOnlyPost reports whether a POST to path is a read PostQuery may send:
+// a /query search, or one of the exact readOnlySearchPaths.
+func isReadOnlyPost(path string) bool {
+	return !isMutatingRequest(http.MethodPost, path) || readOnlySearchPaths[path]
+}
+
 // PostQuery sends a read-only Addigy v2 search (POST to a path ending in
-// /query) with query-string params such as multitenancy=false. Any other path
-// is refused before a request is built, so callers like sync can never reach a
-// mutating endpoint through this method.
+// /query, or an exact readOnlySearchPaths entry) with query-string params such
+// as multitenancy=false. Any other path is refused before a request is built,
+// so callers like sync can never reach a mutating endpoint through this
+// method. Because the path is known to be a read, the mutation confirmation
+// guard does not apply.
 func (c *Client) PostQuery(path string, params map[string]string, body any) (json.RawMessage, int, error) {
-	if isMutatingRequest(http.MethodPost, path) {
-		return nil, 0, fmt.Errorf("refusing POST %s: PostQuery only sends read-only /query requests", path)
+	if !isReadOnlyPost(path) {
+		return nil, 0, fmt.Errorf("refusing POST %s: PostQuery only sends read-only search requests", path)
 	}
-	return c.do("POST", path, params, body, nil)
+	return c.send("POST", path, params, body, nil, true)
 }
 
 func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
@@ -248,6 +264,14 @@ func (c *Client) PatchWithHeaders(path string, body any, headers map[string]stri
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+	return c.send(method, path, params, body, headerOverrides, false)
+}
+
+// send is do with readOnly set by callers that have already verified the
+// request is a read (PostQuery); readOnly skips the mutation guard and cache
+// invalidation.
+func (c *Client) send(method, path string, params map[string]string, body any, headerOverrides map[string]string, readOnly bool) (json.RawMessage, int, error) {
+	mutating := !readOnly && isMutatingRequest(method, path)
 	targetURL := c.BaseURL + c.BasePath + path
 
 	var bodyBytes []byte
@@ -278,7 +302,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 	// exempt. --yes/--agent bypass; in non-interactive mode without --yes we
 	// REFUSE rather than send, so a bare or mistyped mutating command cannot
 	// silently hit production.
-	if isMutatingRequest(method, path) && !c.AssumeYes {
+	if mutating && !c.AssumeYes {
 		if c.NoInput || !stdinIsTTY() {
 			return nil, 0, fmt.Errorf("refusing to send live %s %s without confirmation: pass --yes to proceed (or --dry-run to preview the request)", method, path)
 		}
@@ -363,7 +387,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		// Success
 		if resp.StatusCode < 400 {
 			c.limiter.OnSuccess()
-			if isMutatingRequest(method, path) && !c.DryRun {
+			if mutating && !c.DryRun {
 				c.invalidateCache()
 			}
 			return json.RawMessage(respBody), resp.StatusCode, nil

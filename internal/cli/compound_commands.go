@@ -222,6 +222,21 @@ func parseAddigyTime(s string) time.Time {
 	return time.Time{}
 }
 
+// parseSyncedAt reads a resources.synced_at value. The store writes Go's
+// time.Time.String() form ("2006-01-02 15:04:05.999 -0700 MST m=+0.98"),
+// optionally with a monotonic-clock suffix; RFC3339 values also parse.
+func parseSyncedAt(s string) time.Time {
+	if i := strings.Index(s, " m="); i >= 0 {
+		s = s[:i]
+	}
+	for _, layout := range []string{"2006-01-02 15:04:05.999999999 -0700 MST", "2006-01-02 15:04:05.999999999-07:00"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t
+		}
+	}
+	return parseAddigyTime(s)
+}
+
 func openDB(cmd *cobra.Command, dbPath string) (*store.Store, error) {
 	if dbPath == "" {
 		dbPath = defaultDBPath("addigy-cli")
@@ -368,6 +383,12 @@ Run 'addigy-cli sync' first to populate the local mirror.`,
 					}
 				}
 				for _, r := range rules {
+					if !ruleAppliesToOS(r, d.OSVersion) {
+						continue
+					}
+					if len(r.FilterSets) > 0 && !filterSetsCollected(facts, r.FilterSets) {
+						continue
+					}
 					ok, reason := evaluateRule(facts, r)
 					if !ok {
 						findings = append(findings, finding{
@@ -413,23 +434,43 @@ type rule struct {
 	Field string
 	Op    string
 	Value string
-	Raw   map[string]any
+	// FilterSets holds Addigy's filter_sets: the rule passes when every
+	// filter in at least one set matches the device's facts.
+	FilterSets [][]map[string]any
+	// OSRanges are the [min, max) macOS ranges of the benchmarks that
+	// reference this rule; empty means the rule applies to every OS.
+	OSRanges []osRange
+	Raw      map[string]any
 }
 
 func loadComplianceRules(db *store.Store, policy, ruleFilter string) ([]rule, error) {
-	rows, err := db.DB().Query(`SELECT id, data FROM resources WHERE resource_type='oa-compliance-rules-pre-built'`)
+	// Only rules the org actually uses are evaluated: its own rules
+	// ("compliance-rules") plus the pre-built rules its benchmarks reference.
+	// The pre-built catalog alone holds thousands of rules for every OS and
+	// baseline, most of which no device is meant to meet.
+	inBenchmark, err := loadBenchmarkRuleRanges(db)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.DB().Query(`SELECT id, resource_type, data FROM resources WHERE resource_type IN ('compliance-rules', 'oa-compliance-rules-pre-built')`)
 	if err != nil {
 		// Table may not exist for this fleet — return empty.
 		return nil, nil
 	}
 	defer rows.Close()
 	var out []rule
+	seen := map[string]bool{}
 	for rows.Next() {
-		var id string
+		var id, resourceType string
 		var raw []byte
-		if err := rows.Scan(&id, &raw); err != nil {
+		if err := rows.Scan(&id, &resourceType, &raw); err != nil {
 			return nil, err
 		}
+		ranges, referenced := inBenchmark[id]
+		if seen[id] || (resourceType != "compliance-rules" && !referenced) {
+			continue
+		}
+		seen[id] = true
 		var m map[string]any
 		_ = json.Unmarshal(raw, &m)
 		r := rule{
@@ -440,6 +481,8 @@ func loadComplianceRules(db *store.Store, policy, ruleFilter string) ([]rule, er
 			Value: pickStr(m, "value", "expected", "target"),
 			Raw:   m,
 		}
+		r.FilterSets = parseFilterSets(m["filter_sets"])
+		r.OSRanges = ranges
 		if ruleFilter != "" && r.ID != ruleFilter && r.Name != ruleFilter {
 			continue
 		}
@@ -450,6 +493,9 @@ func loadComplianceRules(db *store.Store, policy, ruleFilter string) ([]rule, er
 }
 
 func evaluateRule(facts map[string]any, r rule) (bool, string) {
+	if len(r.FilterSets) > 0 {
+		return evaluateFilterSets(facts, r.FilterSets)
+	}
 	if r.Field == "" {
 		return true, ""
 	}
@@ -959,7 +1005,7 @@ Run 'addigy-cli sync' periodically to populate the snapshot trail.`,
 			}
 			defer db.Close()
 
-			types := []string{"devices", "oa-compliance-rules-pre-built", "facts", "monitoring", "oa-benchmarks-pre-built"}
+			types := []string{"devices", "policies", "smart-software", "scripts", "compliance-rules", "oa-compliance-rules-pre-built", "facts", "monitoring", "oa-benchmarks-pre-built"}
 			if entity != "" {
 				types = []string{entityToType(entity)}
 			}
@@ -976,13 +1022,16 @@ Run 'addigy-cli sync' periodically to populate the snapshot trail.`,
 			for _, t := range types {
 				qargs = append(qargs, t)
 			}
-			qargs = append(qargs, cutoff.Format(time.RFC3339))
-			rows, err := db.DB().Query(fmt.Sprintf(`SELECT id, resource_type, synced_at FROM resources WHERE resource_type IN (%s) AND datetime(synced_at) >= datetime(?)`, placeholders), qargs...)
+			// synced_at is written as Go's time.Time string form, which
+			// SQLite's datetime() cannot parse, so the cutoff applies here.
+			rows, err := db.DB().Query(fmt.Sprintf(`SELECT id, resource_type, synced_at FROM resources WHERE resource_type IN (%s)`, placeholders), qargs...)
 			if err == nil {
 				for rows.Next() {
 					var id, rt, ts string
 					if err := rows.Scan(&id, &rt, &ts); err == nil {
-						out = append(out, change{ResourceType: rt, ID: id, SyncedAt: ts})
+						if t := parseSyncedAt(ts); !t.IsZero() && !t.Before(cutoff) {
+							out = append(out, change{ResourceType: rt, ID: id, SyncedAt: ts})
+						}
 					}
 				}
 				rows.Close()
@@ -1090,8 +1139,14 @@ coverage but a stale device population.`,
 					b.Stale++
 				}
 			}
+			// Device facts carry policy ids but usually no policy_name;
+			// fill names from the mirrored policies when available.
+			names := policyNamesByID(db)
 			out := make([]bucket, 0, len(byPolicy))
 			for _, b := range byPolicy {
+				if n := names[b.PolicyID]; n != "" && (b.PolicyName == "" || b.PolicyName == b.PolicyID) {
+					b.PolicyName = n
+				}
 				out = append(out, *b)
 			}
 			sort.Slice(out, func(i, j int) bool { return out[i].Total > out[j].Total })
@@ -1197,6 +1252,24 @@ policy coverage percent. The fastest first-call for any Addigy triage workflow.`
 	}
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path")
 	return cmd
+}
+
+// policyNamesByID maps mirrored policy ids to names; empty when policies
+// have not been synced.
+func policyNamesByID(db *store.Store) map[string]string {
+	out := map[string]string{}
+	rows, err := db.DB().Query(`SELECT id, COALESCE(json_extract(data, '$.name'), '') FROM resources WHERE resource_type = 'policies'`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if rows.Scan(&id, &name) == nil && name != "" {
+			out[id] = name
+		}
+	}
+	return out
 }
 
 func countByType(db *store.Store, resourceType string) int {
